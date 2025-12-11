@@ -125,9 +125,17 @@ export BIGQUERY_SAMPLE_ROWS_FOR_STATS=500
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
 ```
 
+### Vector Search Configuration
+See [Vector Search](#-vector-search-optional) section for full setup instructions.
+```bash
+--embedding-model project.dataset.model
+--embedding-tables dataset.table1 dataset.table2
+--distance-type COSINE
+```
+
 ## 🛠️ Tools Overview
 
-This MCP server provides 4 core BigQuery tools optimized for LLM efficiency:
+This MCP server provides 5 BigQuery tools optimized for LLM efficiency:
 
 ### 📊 Smart Dataset & Table Discovery
 - **`list_datasets`** - Dual mode: basic (names only) vs detailed (full metadata)
@@ -137,11 +145,119 @@ This MCP server provides 4 core BigQuery tools optimized for LLM efficiency:
 ### 🔍 Safe Query Execution
 - **`run_query`** - Execute SELECT/WITH queries only, with cost tracking and safety validation. Use LIMIT clause in queries to control result size.
 
+### 🔮 Vector Search (Optional)
+- **`vector_search`** - Dual-mode tool: discover embedding tables (no query_text) or perform semantic similarity search (with query_text)
+
 **Key Features:**
 - ✅ **Minimal by default** - 70% fewer tokens in basic mode
 - ✅ **Safe queries only** - Blocks all write operations
 - ✅ **LLM-optimized** - Returns structured data perfect for AI analysis
 - ✅ **Cost transparent** - Shows bytes processed for each query
+
+## 🔮 Vector Search (Optional)
+
+Enable semantic similarity search using BigQuery vector embeddings.
+
+### Prerequisites: Setting Up Embeddings in BigQuery
+
+Before using vector search, you need an embedding model and tables with embeddings:
+
+**Step 1: Create a Vertex AI connection** (one-time setup)
+```sql
+-- In BigQuery console or bq command line
+-- This creates a connection to Vertex AI for generating embeddings
+CREATE EXTERNAL CONNECTION `your-project.your-region.vertex-ai`
+  OPTIONS (
+    endpoint = 'https://your-region-aiplatform.googleapis.com',
+    type = 'CLOUD_RESOURCE'
+  );
+```
+
+**Step 2: Create the embedding model**
+```sql
+CREATE OR REPLACE MODEL `your-project.your_dataset.text_embedding_model`
+REMOTE WITH CONNECTION `your-project.your-region.vertex-ai`
+OPTIONS (ENDPOINT = 'text-embedding-005');
+```
+
+**Step 3: Add embeddings to your table**
+```sql
+-- Add embedding column to existing table
+ALTER TABLE `your-project.your_dataset.products`
+ADD COLUMN IF NOT EXISTS embedding ARRAY<FLOAT64>;
+
+-- Generate embeddings for your text data
+UPDATE `your-project.your_dataset.products` t
+SET embedding = (
+  SELECT ml_generate_embedding_result
+  FROM ML.GENERATE_EMBEDDING(
+    MODEL `your-project.your_dataset.text_embedding_model`,
+    (SELECT t.name AS content),
+    STRUCT(TRUE AS flatten_json_output)
+  )
+)
+WHERE embedding IS NULL;
+```
+
+> See [BigQuery text embeddings documentation](https://cloud.google.com/bigquery/docs/generate-text-embedding) for detailed setup instructions and connection permissions.
+
+### MCP Configuration for Vector Search
+
+Once you have embeddings set up, configure the MCP server:
+
+```json
+{
+  "mcpServers": {
+    "bigquery": {
+      "command": "uvx",
+      "args": [
+        "bigquery-mcp",
+        "--project", "your-project",
+        "--location", "US",
+        "--embedding-model", "your-project.your_dataset.text_embedding_model",
+        "--embedding-tables", "your_dataset.products", "your_dataset.documents"
+      ]
+    }
+  }
+}
+```
+
+### Configuration Reference
+
+| CLI Argument | Environment Variable | Default | Description |
+|--------------|---------------------|---------|-------------|
+| `--embedding-model` | `BIGQUERY_EMBEDDING_MODEL` | - | **Required.** Full path to embedding model (`project.dataset.model`). Validated on startup. |
+| `--embedding-tables` | `BIGQUERY_EMBEDDING_TABLES` | - | Tables with embedding columns (skips auto-discovery) |
+| `--vector-column-contains` | `BIGQUERY_EMBEDDING_COLUMN_CONTAINS` | `embedding` | Pattern for finding embedding columns (column name must contain this) |
+| `--distance-type` | `BIGQUERY_DISTANCE_TYPE` | `COSINE` | Distance metric: `COSINE`, `EUCLIDEAN`, `DOT_PRODUCT` |
+| `--no-vector-search` | `BIGQUERY_VECTOR_SEARCH_ENABLED=false` | enabled | Disable vector search tools |
+
+### Usage Examples
+
+**Discovery mode** - find tables with embeddings:
+```json
+{
+  "query_text": ""
+}
+```
+
+**Search mode** - semantic similarity search:
+```json
+{
+  "query_text": "solenoid valve for water",
+  "table_path": "my_dataset.products",
+  "top_k": "10",
+  "select_columns": "name,description,price"
+}
+```
+
+### Required Permissions
+
+| Role | Purpose |
+|------|---------|
+| `roles/bigquery.dataViewer` | Read tables and models |
+| `roles/bigquery.jobUser` | Run BigQuery jobs |
+| `roles/bigquery.metadataViewer` | Auto-discover embedding tables (optional) |
 
 ## 🏗️ Development Setup
 
